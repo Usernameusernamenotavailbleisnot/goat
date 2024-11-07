@@ -20,8 +20,16 @@ class GoatsBot:
         self.auth_data = tg_auth_data
         self.access_token = None
         self.access_token_expiry = 0
+        
+        # Extract user data and set user_id
         userdata = self.extract_user_data(tg_auth_data)
-        self.user_id = userdata.get("id")
+        self.user_id = int(userdata.get("id", 0))  # Konversi ke integer
+        
+        if self.user_id == 0:
+            log(mrh + "Warning: Invalid Telegram ID")
+        else:
+            log(hju + f"Telegram ID: {pth}{self.user_id}")
+
 
     def create_session(self) -> ClientSession:
         return ClientSession()
@@ -33,9 +41,24 @@ class GoatsBot:
 
     @staticmethod
     def extract_user_data(auth_data: str) -> dict:
+        """Extract user data dari auth data Telegram"""
         try:
-            return json.loads(unquote(auth_data).split("user=")[1].split("&auth")[0])
-        except (IndexError, JSONDecodeError):
+            # Decode URL-encoded string dan ambil bagian user
+            user_part = unquote(auth_data).split("user=")[1].split("&")[0]
+            user_data = json.loads(user_part)
+            
+            # Pastikan ID ada
+            if not user_data.get("id"):
+                log(mrh + "No Telegram ID found in auth data")
+                return {}
+                
+            return user_data
+            
+        except (IndexError, JSONDecodeError) as e:
+            log(mrh + f"Error parsing auth data: {str(e)}")
+            return {}
+        except Exception as e:
+            log(mrh + f"Unexpected error extracting user data: {str(e)}")
             return {}
 
     @staticmethod
@@ -77,84 +100,208 @@ class GoatsBot:
 
         return proxies
 
-    async def load_token(self, userid):
-        if not os.path.exists("tokens.json"):
-            with open("tokens.json", "w") as f:
-                json.dump({}, f)
-        with open("tokens.json", "r") as f:
-            tokens = json.load(f)
-        token = tokens.get(str(userid))
-        if token:
-            self.access_token = token
-        return token
+    async def load_token(self, userid: int) -> str:
+        """Load token berdasarkan Telegram ID"""
+        try:
+            if not userid or userid == 0:
+                return None
+                
+            if not os.path.exists("tokens.json"):
+                return None
+                
+            with open("tokens.json", "r") as f:
+                tokens = json.load(f)
+                
+            token = tokens.get(str(userid))
+            if token:
+                self.access_token = token
+                return token
+                
+            return None
+            
+        except Exception as e:
+            log(mrh + f"Error loading token: {str(e)}")
+            return None
 
-    async def save_token(self, userid, token):
-        if not os.path.exists("tokens.json"):
+    async def save_token(self, userid: int, token: str) -> None:
+        """Save token dengan Telegram ID"""
+        try:
+            if not userid or userid == 0:
+                log(mrh + "Cannot save token: Invalid Telegram ID")
+                return
+                
+            if not os.path.exists("tokens.json"):
+                with open("tokens.json", "w") as f:
+                    json.dump({}, f)
+                    
+            with open("tokens.json", "r") as f:
+                tokens = json.load(f)
+                
+            # Simpan dengan ID sebagai string
+            tokens[str(userid)] = token
+            
             with open("tokens.json", "w") as f:
-                json.dump({}, f)
-        with open("tokens.json", "r") as f:
-            tokens = json.load(f)
-        tokens[str(userid)] = token
-        with open("tokens.json", "w") as f:
-            json.dump(tokens, f, indent=4)
+                json.dump(tokens, f, indent=4)
+                
+            log(hju + f"Token saved for ID: {pth}{userid}")
+                
+        except Exception as e:
+            log(mrh + f"Error saving token: {str(e)}")
 
     async def login(self) -> bool:
         proxy_url = self.get_proxy_url()
         headers = {
             "Rawdata": self.auth_data,
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.36",
-            "Content-Type": "application/json",
             "Accept": "application/json",
             "Origin": "https://dev.goatsbot.xyz",
             "Referer": "https://dev.goatsbot.xyz/"
         }
         
         try:
-            # Debug log untuk melihat data yang dikirim
-            log(f"Sending auth data: {self.auth_data}")
-            
             async with self.http.post(
                 "https://dev-api.goatsbot.xyz/auth/login",
-                json={},  # Menggunakan json={} alih-alih data={}
+                data={},
                 headers=headers,
                 proxy=proxy_url
             ) as resp:
-                # Debug response
-                #log(f"Response status: {resp.status}")
-                log(f"Response headers: {dict(resp.headers)}")
-                
                 resp_text = await resp.text()
-                log(f"Raw response: {resp_text}")
-                
                 try:
                     resp_json = self.decode_json(resp_text)
-                    
-                    # Jika ada status code error
-                    if resp_json.get("statusCode"):
-                        if resp_json.get("statusCode") == 500:
-                            log(bru + f"Query Expired, Please get new query id!")
-                            return False
-                        else:
-                            log(f"Error while logging in | {resp_json.get('message', 'Unknown error')}")
-                            return False
-                    
-                    # Jika berhasil
-                    access_token = resp_json["tokens"]["access"]["token"]
-                    self.access_token = access_token
-                    self.http.headers["Authorization"] = f"Bearer {access_token}"
-                    await self.save_token(self.user_id, access_token)
-                    log(hju + "Login successful!")
-                    return True
-                    
                 except Exception as e:
-                    log(f"Error parsing response: {str(e)}")
-                    log(f"Response text: {resp_text}")
+                    log(f"Error decoding login response: {e}")
                     return False
                     
+                if resp_json.get("statusCode"):
+                    if resp_json.get("statusCode") == 500:
+                        log(bru + f"Query Expired, Please get new query id!")
+                        return False
+                    else:
+                        log(f"Error while logging in | {resp_json['message']}")
+                        return False
+                
+                access_token = resp_json["tokens"]["access"]["token"]
+                self.access_token = access_token
+                self.http.headers["Authorization"] = f"Bearer {access_token}"
+                
+                # Pastikan user_id tersedia sebelum menyimpan token
+                if self.user_id:
+                    await self.save_token(self.user_id, access_token)
+                else:
+                    log(mrh + "Failed to save token: No user ID available")
+                    
+                return True
+                
         except Exception as e:
             log(f"Login error: {str(e)}")
             return False
-        
+    async def check_cinema_status(self) -> dict:
+        """Check remaining cinema watch opportunities"""
+        try:
+            async with self.http.get(
+                "https://dev-api.goatsbot.xyz/goat-cinema",
+                headers=self.get_auth_headers()
+            ) as resp:
+                if resp.status != 200:
+                    log(mrh + f"Cinema status check failed with status code: {resp.status}")
+                    return None
+
+                resp_json = await resp.json()
+                return resp_json.get("remainTime")
+
+        except Exception as e:
+            log(mrh + f"Error checking cinema status: {str(e)}")
+            return None
+
+    async def get_current_balance(self) -> int:
+        """Get current user balance"""
+        try:
+            user_data = await self.user_data()
+            return user_data.get('balance', 0)
+        except Exception as e:
+            log(mrh + f"Error getting balance: {str(e)}")
+            return 0
+
+    async def claim_cinema_reward(self) -> bool:
+        """Claim cinema watch reward"""
+        try:
+            initial_balance = await self.get_current_balance()
+            
+            # Random delay before claiming (15-20 seconds)
+            delay_time = random.randint(15, 20)
+            log(bru + f"Waiting {pth}{delay_time}{bru} seconds before claiming cinema reward...")
+            await countdown_timer(delay_time)
+            
+            async with self.http.post(
+                "https://dev-api.goatsbot.xyz/goat-cinema/watch",
+                headers=self.get_auth_headers()
+            ) as resp:
+                if resp.status == 201:
+                    # Get new balance and calculate difference
+                    await asyncio.sleep(2)  # Short delay to ensure balance is updated
+                    new_balance = await self.get_current_balance()
+                    balance_increase = new_balance - initial_balance
+                    
+                    log(hju + "Successfully claimed cinema reward!")
+                    if balance_increase > 0:
+                        log(hju + f"Balance increased by: {pth}+{balance_increase:,}")
+                    return True
+                else:
+                    log(mrh + f"Failed to claim cinema reward. Status: {resp.status}")
+                    return False
+
+        except Exception as e:
+            log(mrh + f"Error claiming cinema reward: {str(e)}")
+            return False
+
+    async def process_cinema(self) -> bool:
+        """Process cinema watching and claiming"""
+        try:
+            tickets_used = 0  # Track jumlah tiket yang sudah digunakan
+            
+            # Cek tiket yang tersedia sekali di awal
+            initial_remain_time = await self.check_cinema_status()
+            
+            if initial_remain_time is None:
+                log(mrh + "Failed to check cinema status")
+                return False
+                
+            if initial_remain_time <= 0:
+                log(kng + "No cinema watches available")
+                return True  # Return True agar bisa lanjut ke akun berikutnya
+                
+            log(bru + f"Found {pth}{initial_remain_time}{bru} cinema watch(es)")
+            
+            # Proses tiket yang tersedia
+            while tickets_used < initial_remain_time:
+                remain_time = await self.check_cinema_status()
+                
+                if remain_time and remain_time > 0:
+                    # Attempt to claim the reward
+                    if await self.claim_cinema_reward():
+                        tickets_used += 1
+                        
+                        # Jika masih ada tiket tersisa
+                        if tickets_used < initial_remain_time:
+                            delay_time = random.randint(3, 5)
+                            log(bru + f"Waiting {pth}{delay_time}{bru} seconds before next cinema watch...")
+                            await countdown_timer(delay_time)
+                        else:
+                            log(hju + "All cinema tickets have been used")
+                            break
+                    else:
+                        log(mrh + "Failed to claim cinema reward")
+                        break
+                else:
+                    log(kng + "No more cinema watches available")
+                    break
+                    
+            return True  # Lanjut ke akun berikutnya
+
+        except Exception as e:
+            log(mrh + f"Error processing cinema: {str(e)}")
+            return True  # Tetap lanjut ke akun berikutnya meski terjadi error
+
     def get_auth_headers(self) -> dict:
         return {
             'Authorization': f"Bearer {self.access_token}",
@@ -240,7 +387,7 @@ class GoatsBot:
                 return False
 
     async def watch(self, block_id: int, tg_id: int) -> bool:     
-        watch_time = random.randint(16, 17)
+        watch_time = random.randint(60, 120)
         log(bru + f"Watching ads for {pth}{watch_time} {bru}seconds...")
         ad_url = f"https://api.adsgram.ai/adv?blockId={block_id}&tg_id={tg_id}&tg_platform=android&platform=Linux+aarch64&language=id"
         resp = await self.http.get(ad_url, headers=self.get_auth_headers())
