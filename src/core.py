@@ -102,34 +102,58 @@ class GoatsBot:
         proxy_url = self.get_proxy_url()
         headers = {
             "Rawdata": self.auth_data,
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.36"
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.36",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "Origin": "https://dev.goatsbot.xyz",
+            "Referer": "https://dev.goatsbot.xyz/"
         }
-        async with self.http.post(
-            "https://dev-api.goatsbot.xyz/auth/login",
-            data={},
-            headers=headers,
-            proxy=proxy_url
-        ) as resp:
-            resp_text = await resp.text()
-            try:
-                resp_json = self.decode_json(resp_text)
-            except Exception as e:
-                log(f"Error decoding login response: {e}")
-                return False
-
-            if resp_json.get("statusCode"):
-                if resp_json.get("statusCode") == 500:
-                    log(bru + f"Query Expired, Please get new query id!")
+        
+        try:
+            # Debug log untuk melihat data yang dikirim
+            log(f"Sending auth data: {self.auth_data}")
+            
+            async with self.http.post(
+                "https://dev-api.goatsbot.xyz/auth/login",
+                json={},  # Menggunakan json={} alih-alih data={}
+                headers=headers,
+                proxy=proxy_url
+            ) as resp:
+                # Debug response
+                #log(f"Response status: {resp.status}")
+                log(f"Response headers: {dict(resp.headers)}")
+                
+                resp_text = await resp.text()
+                log(f"Raw response: {resp_text}")
+                
+                try:
+                    resp_json = self.decode_json(resp_text)
+                    
+                    # Jika ada status code error
+                    if resp_json.get("statusCode"):
+                        if resp_json.get("statusCode") == 500:
+                            log(bru + f"Query Expired, Please get new query id!")
+                            return False
+                        else:
+                            log(f"Error while logging in | {resp_json.get('message', 'Unknown error')}")
+                            return False
+                    
+                    # Jika berhasil
+                    access_token = resp_json["tokens"]["access"]["token"]
+                    self.access_token = access_token
+                    self.http.headers["Authorization"] = f"Bearer {access_token}"
+                    await self.save_token(self.user_id, access_token)
+                    log(hju + "Login successful!")
+                    return True
+                    
+                except Exception as e:
+                    log(f"Error parsing response: {str(e)}")
+                    log(f"Response text: {resp_text}")
                     return False
-                else:
-                    log(f"Error while logging in | {resp_json['message']}")
-                    return False
-
-            access_token = resp_json["tokens"]["access"]["token"]
-            self.access_token = access_token
-            self.http.headers["Authorization"] = f"Bearer {access_token}"
-            await self.save_token(self.user_id, access_token)
-            return True
+                    
+        except Exception as e:
+            log(f"Login error: {str(e)}")
+            return False
         
     def get_auth_headers(self) -> dict:
         return {
